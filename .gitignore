@@ -1,0 +1,77 @@
+# .gitignore
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# Makefile
+.PHONY: help build run test clean migrate-up migrate-down
+
+help: ## Show this help
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+build: ## Build the application
+	go build -o bin/api cmd/api/main.go
+
+run: ## Run the application
+	go run cmd/api/main.go
+
+test: ## Run tests
+	go test -v ./...
+
+clean: ## Clean build files
+	rm -rf bin/
+
+deps: ## Install dependencies
+	go mod download
+	go mod tidy
+
+migrate-up: ## Run database migrations
+	psql $(DATABASE_URL) -f migrations/001_create_tables.sql
+
+migrate-down: ## Rollback database migrations
+	psql $(DATABASE_URL) -c "DROP TABLE IF EXISTS todos; DROP TABLE IF EXISTS users;"
+
+docker-up: ## Start PostgreSQL with Docker
+	docker run --name postgres-todo -e POSTGRES_PASSWORD=password -e POSTGRES_DB=todoapp -p 5432:5432 -d postgres:15
+
+docker-down: ## Stop PostgreSQL Docker container
+	docker stop postgres-todo && docker rm postgres-todo
+
+dev: ## Run in development mode with hot reload
+	go install github.com/cosmtrek/air@latest
+	air

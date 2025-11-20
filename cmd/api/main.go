@@ -58,6 +58,8 @@ func main() {
 
 	// --- CHANGED ---
 	// We now *call* AuthMiddleware, passing it the dependency it needs
+	api.Use(middleware.RateLimitMiddleware)
+	//api.Use(middleware.ThrottleMiddleware)
 	api.Use(middleware.AuthMiddleware(tokenGenerator))
 
 	api.HandleFunc("", todoHandler.GetTodos).Methods("GET")

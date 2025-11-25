@@ -12,9 +12,9 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/pigeio/todo-api/internal/database"
 	"github.com/pigeio/todo-api/internal/handlers"
-	"github.com/pigeio/todo-api/internal/middleware" // Import middleware
+	"github.com/pigeio/todo-api/internal/middleware"
 	"github.com/pigeio/todo-api/internal/repository"
-	"github.com/pigeio/todo-api/internal/utils" // NEW IMPORT
+	"github.com/pigeio/todo-api/internal/utils"
 )
 
 func main() {
@@ -37,6 +37,7 @@ func main() {
 	// Initialize REAL repositories
 	userRepo := repository.NewUserRepository(db)
 	todoRepo := repository.NewTodoRepository(db)
+	refreshRepo := repository.NewRefreshRepository(db)
 
 	// Initialize REAL Token Generator
 	tokenGenerator, err := utils.NewJWTGenerator(jwtSecret)
@@ -44,20 +45,38 @@ func main() {
 		log.Fatal("Failed to create token generator:", err)
 	}
 
-	// Initialize Handlers, "plugging in" the real dependencies
-	authHandler := handlers.NewAuthHandler(userRepo, tokenGenerator)
+	// 1. Auth Handler (Register / Login)
+	authHandler := handlers.NewAuthHandlerWithRefresh(
+		userRepo,
+		tokenGenerator,
+		refreshRepo,
+	)
 
-	// Note: You must also update NewTodoHandler to accept its interface
+	// 2. Refresh Handler (Refresh / Logout) <-- ADDED THIS
+	// We pass userRepo, refreshRepo, and the tokenGenerator
+	refreshHandler := handlers.NewRefreshHandler(
+		userRepo,
+		refreshRepo,
+		tokenGenerator,
+	)
+
+	// 3. Todo Handler
 	todoHandler := handlers.NewTodoHandler(todoRepo)
 
+	// --- ROUTER SETUP ---
 	r := mux.NewRouter()
+
+	// Public Routes
 	r.HandleFunc("/register", authHandler.Register).Methods("POST")
 	r.HandleFunc("/login", authHandler.Login).Methods("POST")
 
-	api := r.PathPrefix("/todos").Subrouter()
+	// Auth Routes (Refresh/Logout) <-- ADDED THESE
+	authRoutes := r.PathPrefix("/auth").Subrouter()
+	authRoutes.HandleFunc("/refresh", refreshHandler.Refresh).Methods("POST")
+	authRoutes.HandleFunc("/logout", refreshHandler.Logout).Methods("POST")
 
-	// --- CHANGED ---
-	// We now *call* AuthMiddleware, passing it the dependency it needs
+	// Protected Todo Routes
+	api := r.PathPrefix("/todos").Subrouter()
 	api.Use(middleware.AuthMiddleware(tokenGenerator))
 
 	api.HandleFunc("", todoHandler.GetTodos).Methods("GET")

@@ -5,50 +5,50 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/pigeio/todo-api/internal/models" // Import models for Claims
 	"github.com/pigeio/todo-api/internal/utils"
 )
 
 type contextKey string
 
-const UserContextKey contextKey = "user"
+const UserIDKey contextKey = "userID"
 
-// AuthMiddleware is now a function that ACCEPTS the tokenGenerator
-// and RETURNS the actual middleware.
 func AuthMiddleware(tokenGen utils.TokenGenerator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || parts[0] != "Bearer" {
-				utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 
-			token := parts[1]
-
-			// --- CHANGED ---
-			// Use the injected token generator
-			claims, err := tokenGen.ValidateToken(token)
+			claims, err := tokenGen.ValidateToken(parts[1])
 			if err != nil {
-				utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 
-			// Add user info to context
-			ctx := context.WithValue(r.Context(), UserContextKey, claims)
+			subVal, ok := claims["sub"]
+			if !ok {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+
+			userID := int(subVal.(float64))
+
+			ctx := context.WithValue(r.Context(), UserIDKey, userID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// GetUserFromContext is changed to use models.Claims
-func GetUserFromContext(ctx context.Context) (*models.Claims, bool) {
-	claims, ok := ctx.Value(UserContextKey).(*models.Claims)
-	return claims, ok
+func GetUserID(ctx context.Context) (int, bool) {
+	userID, ok := ctx.Value(UserIDKey).(int)
+	return userID, ok
 }

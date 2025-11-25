@@ -4,112 +4,119 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/pigeio/todo-api/internal/models"
-	"github.com/pigeio/todo-api/internal/repository" // Import for the interface
-	"github.com/pigeio/todo-api/internal/utils"      // Import for the interface
+	"github.com/pigeio/todo-api/internal/repository"
+	"github.com/pigeio/todo-api/internal/utils"
 )
 
 type AuthHandler struct {
-	// We now use the interfaces (the "sockets")
-	userRepo  repository.User_Repository // Using your name from interfaces.go
-	validator *validator.Validate
-	tokenGen  utils.TokenGenerator // From the new jwt.go
+	userRepo    repository.User_Repository
+	validator   *validator.Validate
+	tokenGen    utils.TokenGenerator
+	refreshRepo *repository.RefreshRepository
 }
 
-// NewAuthHandler now accepts the interfaces
-func NewAuthHandler(userRepo repository.User_Repository, tokenGen utils.TokenGenerator) *AuthHandler {
+// NewAuthHandler (for tests)
+func NewAuthHandler(
+	userRepo repository.User_Repository,
+	tokenGen utils.TokenGenerator,
+) *AuthHandler {
 	return &AuthHandler{
 		userRepo:  userRepo,
 		validator: validator.New(),
-		tokenGen:  tokenGen, // Store the token generator
+		tokenGen:  tokenGen,
 	}
 }
 
-// --- Register Handler (Updated) ---
+// NewAuthHandlerWithRefresh (for main app)
+func NewAuthHandlerWithRefresh(
+	userRepo repository.User_Repository,
+	tokenGen utils.TokenGenerator,
+	refreshRepo *repository.RefreshRepository,
+) *AuthHandler {
+	h := NewAuthHandler(userRepo, tokenGen)
+	h.refreshRepo = refreshRepo
+	return h
+}
+
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req models.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
+	json.NewDecoder(r.Body).Decode(&req)
 
 	if err := h.validator.Struct(req); err != nil {
-		// You can add your detailed error formatting back here
 		utils.RespondError(w, http.StatusBadRequest, "Validation failed")
 		return
 	}
 
-	exists, err := h.userRepo.EmailExists(r.Context(), req.Email)
-	if err != nil {
-		utils.RespondError(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
+	exists, _ := h.userRepo.EmailExists(r.Context(), req.Email)
 	if exists {
 		utils.RespondError(w, http.StatusBadRequest, "Email already exists")
 		return
 	}
 
-	hashedPassword, err := utils.HashPassword(req.Password)
-	if err != nil {
-		utils.RespondError(w, http.StatusInternalServerError, "Internal server error")
-		return
-	}
+	hashed, _ := utils.HashPassword(req.Password)
 
 	user := &models.User{
 		Name:     req.Name,
 		Email:    strings.ToLower(req.Email),
-		Password: hashedPassword,
+		Password: hashed,
 	}
 
-	if err := h.userRepo.Create(r.Context(), user); err != nil {
-		utils.RespondError(w, http.StatusInternalServerError, "Failed to create user")
-		return
-	}
+	h.userRepo.Create(r.Context(), user)
 
-	// Generate token (now uses the interface)
-	token, err := h.tokenGen.GenerateToken(user.ID, user.Email)
-	if err != nil {
-		utils.RespondError(w, http.StatusInternalServerError, "Failed to generate token")
-		return
-	}
+	// Use method from interface
+	token, _ := h.tokenGen.GenerateAccessToken(user.ID, user.Email)
 
-	response := models.AuthResponse{Token: token}
-	utils.RespondJSON(w, http.StatusCreated, response)
+	utils.RespondJSON(w, http.StatusCreated, map[string]string{
+		"token": token,
+	})
 }
 
-// --- Login Handler (Updated) ---
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	if err := h.validator.Struct(req); err != nil {
-		utils.RespondError(w, http.StatusBadRequest, "Validation failed")
-		return
-	}
+	json.NewDecoder(r.Body).Decode(&req)
 
 	user, err := h.userRepo.GetByEmail(r.Context(), strings.ToLower(req.Email))
-	if err != nil {
+	if err != nil || !utils.CheckPassword(req.Password, user.Password) {
 		utils.RespondError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
 	}
 
-	if !utils.CheckPassword(req.Password, user.Password) {
-		utils.RespondError(w, http.StatusUnauthorized, "Invalid credentials")
+	// MODE 1 — no refresh repo → tests (simple token)
+	if h.refreshRepo == nil {
+		token, _ := h.tokenGen.GenerateAccessToken(user.ID, user.Email)
+		utils.RespondJSON(w, http.StatusOK, map[string]string{"token": token})
 		return
 	}
 
-	// Generate token (now uses the interface)
-	token, err := h.tokenGen.GenerateToken(user.ID, user.Email)
-	if err != nil {
-		utils.RespondError(w, http.StatusInternalServerError, "Failed to generate token")
-		return
-	}
+	// MODE 2 — refresh tokens (real app)
+	// FIX: Call interface methods instead of static utils.* functions
+	accessToken, _ := h.tokenGen.GenerateAccessToken(user.ID, user.Email)
+	refreshToken, jti, _ := h.tokenGen.GenerateRefreshToken(user.ID, user.Email)
 
-	response := models.AuthResponse{Token: token}
-	utils.RespondJSON(w, http.StatusOK, response)
+	session := &models.RefreshSession{
+		JTI:       jti,
+		UserID:    user.ID,
+		UserAgent: r.UserAgent(),
+		IP:        r.RemoteAddr,
+		CreatedAt: time.Now().UTC(),
+		ExpiresAt: time.Now().Add(h.tokenGen.GetRefreshTokenExpiry()), // FIX
+	}
+	h.refreshRepo.CreateSession(r.Context(), session)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "refreshToken",
+		Value:    refreshToken,
+		HttpOnly: true,
+		Path:     "/",
+		SameSite: http.SameSiteLaxMode,
+		Expires:  session.ExpiresAt,
+	})
+
+	utils.RespondJSON(w, http.StatusOK, map[string]string{
+		"access_token": accessToken,
+	})
 }

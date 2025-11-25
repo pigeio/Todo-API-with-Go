@@ -9,17 +9,15 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/pigeio/todo-api/internal/middleware"
 	"github.com/pigeio/todo-api/internal/models"
-	"github.com/pigeio/todo-api/internal/repository" // Import for interface
+	"github.com/pigeio/todo-api/internal/repository"
 	"github.com/pigeio/todo-api/internal/utils"
 )
 
 type TodoHandler struct {
-	// Use your interface name
 	todoRepo  repository.Todo_Repository
 	validator *validator.Validate
 }
 
-// Use your interface name
 func NewTodoHandler(todoRepo repository.Todo_Repository) *TodoHandler {
 	return &TodoHandler{
 		todoRepo:  todoRepo,
@@ -28,30 +26,26 @@ func NewTodoHandler(todoRepo repository.Todo_Repository) *TodoHandler {
 }
 
 func (h *TodoHandler) CreateTodo(w http.ResponseWriter, r *http.Request) {
-	// Get user from context
-	claims, ok := middleware.GetUserFromContext(r.Context())
+
+	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
 		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	var req models.CreateTodoRequest
-
-	// Decode request body
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	// Validate input
 	if err := h.validator.Struct(req); err != nil {
 		utils.RespondError(w, http.StatusBadRequest, "Title is required")
 		return
 	}
 
-	// Create todo
 	todo := &models.Todo{
-		UserID:      claims.UserID,
+		UserID:      userID,
 		Title:       req.Title,
 		Description: req.Description,
 	}
@@ -64,16 +58,14 @@ func (h *TodoHandler) CreateTodo(w http.ResponseWriter, r *http.Request) {
 	utils.RespondJSON(w, http.StatusCreated, todo)
 }
 
-// --- THIS IS THE FIXED FUNCTION ---
 func (h *TodoHandler) GetTodos(w http.ResponseWriter, r *http.Request) {
-	// Get user from context
-	claims, ok := middleware.GetUserFromContext(r.Context())
+
+	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
 		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
-	// Get pagination parameters
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	if page < 1 {
 		page = 1
@@ -84,20 +76,15 @@ func (h *TodoHandler) GetTodos(w http.ResponseWriter, r *http.Request) {
 		limit = 10
 	}
 
-	// Read the new filter and sort parameters
 	status := r.URL.Query().Get("status")
 	sortBy := r.URL.Query().Get("sort_by")
 
-	// --- THIS LINE WAS MISSING ---
-	// It declares todos, total, and err, and uses claims, status, and sortBy
-	todos, total, err := h.todoRepo.GetByUserID(r.Context(), claims.UserID, page, limit, status, sortBy)
+	todos, total, err := h.todoRepo.GetByUserID(r.Context(), userID, page, limit, status, sortBy)
 	if err != nil {
 		utils.RespondError(w, http.StatusInternalServerError, "Failed to fetch todos")
 		return
 	}
-	// --- END OF FIX ---
 
-	// Prepare response
 	response := models.TodoListResponse{
 		Data:  todos,
 		Page:  page,
@@ -109,14 +96,13 @@ func (h *TodoHandler) GetTodos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TodoHandler) UpdateTodo(w http.ResponseWriter, r *http.Request) {
-	// Get user from context
-	claims, ok := middleware.GetUserFromContext(r.Context())
+
+	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
 		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
-	// Get todo ID from URL
 	vars := mux.Vars(r)
 	todoID, err := strconv.Atoi(vars["id"])
 	if err != nil {
@@ -124,28 +110,23 @@ func (h *TodoHandler) UpdateTodo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get existing todo
 	todo, err := h.todoRepo.GetByID(r.Context(), todoID)
 	if err != nil {
 		utils.RespondError(w, http.StatusNotFound, "Todo not found")
 		return
 	}
 
-	// Check authorization
-	if todo.UserID != claims.UserID {
+	if todo.UserID != userID {
 		utils.RespondError(w, http.StatusForbidden, "Forbidden")
 		return
 	}
 
 	var req models.UpdateTodoRequest
-
-	// Decode request body
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.RespondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	// Update fields if provided
 	if req.Title != "" {
 		todo.Title = req.Title
 	}
@@ -156,7 +137,6 @@ func (h *TodoHandler) UpdateTodo(w http.ResponseWriter, r *http.Request) {
 		todo.Completed = *req.Completed
 	}
 
-	// Update in database
 	if err := h.todoRepo.Update(r.Context(), todo); err != nil {
 		utils.RespondError(w, http.StatusInternalServerError, "Failed to update todo")
 		return
@@ -166,14 +146,13 @@ func (h *TodoHandler) UpdateTodo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TodoHandler) DeleteTodo(w http.ResponseWriter, r *http.Request) {
-	// Get user from context
-	claims, ok := middleware.GetUserFromContext(r.Context())
+
+	userID, ok := middleware.GetUserID(r.Context())
 	if !ok {
 		utils.RespondError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
-	// Get todo ID from URL
 	vars := mux.Vars(r)
 	todoID, err := strconv.Atoi(vars["id"])
 	if err != nil {
@@ -181,8 +160,7 @@ func (h *TodoHandler) DeleteTodo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Delete todo
-	if err := h.todoRepo.Delete(r.Context(), todoID, claims.UserID); err != nil {
+	if err := h.todoRepo.Delete(r.Context(), todoID, userID); err != nil {
 		utils.RespondError(w, http.StatusNotFound, "Todo not found")
 		return
 	}
